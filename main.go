@@ -33,38 +33,60 @@ type DnsMsg struct {
 }
 
 type AclData struct {
-	IP             string
-	Domain         string
-	Dns            []string
-	Netmask        int64
-	Cidr           string
-	ForwardGroup   []string
-	MasterDnsRe    *regexp.Regexp
-	MasterDnsReStr string
-	MasterDns      []string
-	BackupDnsRe    *regexp.Regexp
-	BackupDnsReStr string
-	BackupDns      []string
-	EndChan        chan int
-	JobChan        chan int
-	JobNumebr      int
-	DoneJobNumber  int
-	MasterDnsQuery chan []string
-	BakupDnsQuery  chan []string
-	Timeout        time.Duration
-	Msg            *dns.Msg
+	// source ip
+	IP string `json:"IP"`
+
+	// acl data
+	Netmask int64
+	Cidr    string
+
+	// forward group list
+	ForwardGroup []string
+
+	// Master linedns 正则表达式文本
+	MasterLineDnsReStr string
+	// Master 使用的上层DNS
+	MasterDns []string
+
+	// backup linedns 正则表达式文本
+	BackupLineDnsReStr string
+	// backup 使用的上层DNS
+	BackupDns []string
+
+	// master & backup linedns query timeout
+	Timeout int64
+
+	// tmp data
+	MasterLineDnsRe    *regexp.Regexp
+	MasterLineDns      []string
+	BackupLineDnsRe    *regexp.Regexp
+	BackupLineDns      []string
+	Domain             string
+	EndChan            chan int
+	JobChan            chan int
+	JobNumebr          int
+	DoneJobNumber      int
+	MasterLineDnsQuery chan string
+	BakupDnsQuery      chan string
+	Msg                *dns.Msg
 }
 
 type ForwardData struct {
-	LineDnsReStr string
+	LineDnsReStr string `json:"lineDnsReStr"`
 	LineDnsRe    *regexp.Regexp
-	Dns          []string
+	Dns          []string `json:"dns"`
+}
+
+type ForwardData2 struct {
+	LineDnsReStr string   `json:"lineDnsReStr"`
+	Dns          []string `json:"dns"`
 }
 
 func main() {
-	cli, err := clientv3.New(clientv3.Config{
+	var err error
+	cli, err = clientv3.New(clientv3.Config{
 		Endpoints:   []string{"localhost:2379"},
-		DialTimeout: 5 * time.Second,
+		DialTimeout: 10 * time.Second,
 	})
 	if ErrCheck(err) {
 		os.Exit(1)
@@ -78,7 +100,7 @@ func main() {
 	EtcdDataInit()
 
 	// attach request handler func
-	dns.HandleFunc("service.", DnsMsgProcess)
+	dns.HandleFunc(".", DnsMsgProcess)
 
 	// start server
 	port := 5353
@@ -103,15 +125,15 @@ func EtcdDataInit() {
 		for _, ev := range resp.Kvs {
 			ip := strings.Split(string(ev.Key), "/")[4]
 			var tmpAclData AclData
-			err = json.Unmarshal(ev.Value, tmpAclData)
+			err = json.Unmarshal(ev.Value, &tmpAclData)
 			if err != nil {
 				continue
 			}
-			tmpRe, _ := regexp.Compile(tmpAclData.MasterDnsReStr)
-			tmpAclData.MasterDnsRe = tmpRe
+			tmpRe, _ := regexp.Compile(tmpAclData.MasterLineDnsReStr)
+			tmpAclData.MasterLineDnsRe = tmpRe
 
-			tmpRe, _ = regexp.Compile(tmpAclData.BackupDnsReStr)
-			tmpAclData.BackupDnsRe = tmpRe
+			tmpRe, _ = regexp.Compile(tmpAclData.BackupLineDnsReStr)
+			tmpAclData.BackupLineDnsRe = tmpRe
 
 			AclMap[ip] = tmpAclData
 		}
@@ -123,8 +145,9 @@ func EtcdDataInit() {
 			keyStr := string(ev.Key)
 			groupName := strings.Split(keyStr, "/")[2]
 			domainName := strings.Split(keyStr, "/")[3]
+
 			var tmpData ForwardData
-			err = json.Unmarshal(ev.Value, tmpData)
+			err = json.Unmarshal(ev.Value, &tmpData)
 			if err != nil {
 				continue
 			}
@@ -152,20 +175,25 @@ func AclMapWatch() {
 	rch := cli.Watch(context.Background(), "/acl/ip/pool/", clientv3.WithPrefix())
 	for wresp := range rch {
 		for _, ev := range wresp.Events {
-			ip := strings.Split(string(ev.Kv.Key), "/")[4]
+			tmpList := strings.Split(string(ev.Kv.Key), "/")
+			if len(tmpList) != 5 {
+				continue
+			}
+
+			ip := tmpList[4]
 
 			switch ev.Type.String() {
 			case "PUT":
 				var tmpAclData AclData
-				err := json.Unmarshal(ev.Kv.Value, tmpAclData)
+				err := json.Unmarshal(ev.Kv.Value, &tmpAclData)
 				if err != nil {
 					continue
 				}
-				tmpRe, _ := regexp.Compile(tmpAclData.MasterDnsReStr)
-				tmpAclData.MasterDnsRe = tmpRe
+				tmpRe, _ := regexp.Compile(tmpAclData.MasterLineDnsReStr)
+				tmpAclData.MasterLineDnsRe = tmpRe
 
-				tmpRe, _ = regexp.Compile(tmpAclData.BackupDnsReStr)
-				tmpAclData.BackupDnsRe = tmpRe
+				tmpRe, _ = regexp.Compile(tmpAclData.BackupLineDnsReStr)
+				tmpAclData.BackupLineDnsRe = tmpRe
 
 				AclMap[ip] = tmpAclData
 			case "DELETE":
@@ -180,13 +208,18 @@ func ForwardGroupMapWatch() {
 	for wresp := range rch {
 		for _, ev := range wresp.Events {
 			keyStr := string(ev.Kv.Key)
-			groupName := strings.Split(keyStr, "/")[2]
-			domainName := strings.Split(keyStr, "/")[3]
+			tmpList := strings.Split(keyStr, "/")
+			if len(tmpList) != 4 {
+				continue
+			}
+
+			groupName := tmpList[2]
+			domainName := tmpList[3]
 
 			switch ev.Type.String() {
 			case "PUT":
 				var tmpData ForwardData
-				err := json.Unmarshal(ev.Kv.Value, tmpData)
+				err := json.Unmarshal(ev.Kv.Value, &tmpData)
 				if err != nil {
 					continue
 				}
@@ -202,13 +235,19 @@ func ForwardGroupMapWatch() {
 }
 
 func LineDnsMapWatch() {
-	rch := cli.Watch(context.Background(), "/forward/", clientv3.WithPrefix())
+	rch := cli.Watch(context.Background(), "/line/dns/", clientv3.WithPrefix())
 	for wresp := range rch {
 		for _, ev := range wresp.Events {
 			keyStr := string(ev.Kv.Key)
-			zoneName := strings.Split(keyStr, "/")[3]
-			lineType := strings.Split(keyStr, "/")[4]
-			addr := strings.Split(keyStr, "/")[5]
+			tmpList := strings.Split(keyStr, "/")
+
+			if len(tmpList) != 6 {
+				continue
+			}
+
+			zoneName := tmpList[3]
+			lineType := tmpList[4]
+			addr := tmpList[5]
 			newKey := "/" + zoneName + "/" + lineType + "/"
 
 			switch ev.Type.String() {
@@ -223,80 +262,79 @@ func LineDnsMapWatch() {
 }
 
 func EtcdClinet(key string) (resp *clientv3.GetResponse, err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10)
-	resp, err = cli.Get(ctx, "key", clientv3.WithPrefix())
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	resp, err = cli.Get(ctx, key, clientv3.WithPrefix())
 	cancel()
 	ErrCheck(err)
 	return
 }
 
 func DnsMsgProcess(w dns.ResponseWriter, r *dns.Msg) {
+
 	// acl check , not on acl exit thread
-	acl, ok := AclMap[w.RemoteAddr().String()]
+	addr := strings.Split(w.RemoteAddr().String(), ":")[0]
+
+	acl, ok := AclMap[addr]
+	// Not on Acl exit
 	if !ok {
+		w.WriteMsg(r)
 		return
 	}
 
-	switch r.Opcode {
-	case dns.OpcodeQuery:
-		acl.Msg = new(dns.Msg).SetReply(r)
-		err := acl.init()
-		if err == nil {
-			acl.ParseQuery()
-		}
-	}
+	acl.Msg = new(dns.Msg).SetReply(r)
 
-	w.WriteMsg(acl.Msg)
-
-}
-
-func (acl *AclData) init() error {
+	// check query is nil exit
 	if len(acl.Msg.Question) < 1 {
-		return fmt.Errorf("question is nil")
+		return
 	}
 
 	acl.Domain = acl.Msg.Question[0].Name
 	acl.CheckRquestDns(acl.Domain)
 	acl.CheckLineDns()
 
-	acl.MasterDnsQuery = make(chan []string, 10)
-	acl.BakupDnsQuery = make(chan []string, 10)
+	acl.MasterLineDnsQuery = make(chan string, 10)
+	acl.BakupDnsQuery = make(chan string, 10)
 	acl.EndChan = make(chan int)
-	return nil
+
+	acl.ParseQuery()
+
+	w.WriteMsg(acl.Msg)
+
 }
 
 func (acl *AclData) ParseQuery() {
 	go acl.QueryLineDns()
-	var DnsQureyRR []string
+	var DnsQureyRR string
 
 	// 等待 master dns 回复
 	select {
-	case DnsQureyRR = <-acl.MasterDnsQuery:
+	case DnsQureyRR = <-acl.MasterLineDnsQuery:
 	case <-acl.EndChan:
 		return
-	case <-time.After(3 * time.Second):
+	case <-time.After(time.Duration(acl.Timeout) * time.Second):
 	}
 
 	// master dns timeout，加入 bakup dns 等待
 	// 再次 time out exit
 	if len(DnsQureyRR) == 0 {
 		select {
-		case DnsQureyRR = <-acl.MasterDnsQuery:
+		case DnsQureyRR = <-acl.MasterLineDnsQuery:
 		case DnsQureyRR = <-acl.BakupDnsQuery:
 		case <-acl.EndChan:
 			return
-		case <-time.After(3 * time.Second):
+		case <-time.After(time.Duration(acl.Timeout) * time.Second):
 			return
 		}
 	}
 
 	// 获取取到结果，返回给用户
-	for _, dnsRR := range DnsQureyRR {
-		rr, err := dns.NewRR(dnsRR)
-		if ErrCheck(err) {
-			continue
+	rrList := strings.Split(DnsQureyRR, "\n")
+
+	for _, dnsRR := range rrList {
+		rr, _ := dns.NewRR(dnsRR)
+		if rr != nil {
+			acl.Msg.Answer = append(acl.Msg.Answer, rr)
 		}
-		acl.Msg.Answer = append(acl.Msg.Answer, rr)
 	}
 
 }
@@ -305,11 +343,11 @@ func (acl *AclData) QueryLineDns() {
 
 	acl.JobChan = make(chan int, acl.JobNumebr)
 
-	for _, dnsServer := range acl.MasterDns {
+	for _, dnsServer := range acl.MasterLineDns {
 		go acl.RequestLineDns("Master", dnsServer)
 	}
 
-	for _, dnsServer := range acl.BackupDns {
+	for _, dnsServer := range acl.BackupLineDns {
 		go acl.RequestLineDns("Backup", dnsServer)
 	}
 
@@ -330,8 +368,8 @@ func (acl *AclData) CheckRquestDns(domain string) {
 
 	for _, group := range acl.ForwardGroup {
 		if requestDns, ok := ForwardGroupMap[group][domain]; ok {
-			acl.Dns = requestDns.Dns
-			acl.MasterDnsRe = requestDns.LineDnsRe
+			acl.MasterDns = requestDns.Dns
+			acl.MasterLineDnsRe = requestDns.LineDnsRe
 			return
 		}
 	}
@@ -342,7 +380,12 @@ func (acl *AclData) CheckRquestDns(domain string) {
 
 	if len(domainArry) > 1 {
 		for _, tmpDomain := range domainArry[1:] {
-			newDomain = newDomain + "." + tmpDomain
+			if newDomain == "" {
+				newDomain = tmpDomain
+			} else {
+				newDomain = newDomain + "." + tmpDomain
+
+			}
 		}
 	}
 
@@ -352,21 +395,40 @@ func (acl *AclData) CheckRquestDns(domain string) {
 // on etcd get LineDns Servers
 func (acl *AclData) CheckLineDns() {
 	for key, dns := range LineDnsMap {
-		if acl.MasterDnsRe.MatchString(key) {
-			acl.MasterDns = append(acl.MasterDns, dns)
+		if acl.MasterLineDnsRe.MatchString(key) {
+			acl.MasterLineDns = append(acl.MasterLineDns, dns)
 		}
 
-		if acl.BackupDnsRe.MatchString(key) {
-			acl.BackupDns = append(acl.BackupDns, dns)
+		if acl.BackupLineDnsRe.MatchString(key) {
+			acl.BackupLineDns = append(acl.BackupLineDns, dns)
 		}
 	}
 
-	acl.JobNumebr = len(acl.MasterDns) + len(acl.BackupDns)
+	acl.JobNumebr = (len(acl.MasterLineDns) + len(acl.BackupLineDns)) * len(acl.MasterDns)
 
 }
 
 func (acl *AclData) RequestLineDns(dnsType string, lineDns string) {
-	resp, err := http.Get(fmt.Sprintf("http://%s/%s/%s", lineDns, acl.Domain, acl.Dns))
+	q := acl.Msg.Question[0]
+
+	url := fmt.Sprint("http://" + lineDns + "/query/" + q.Name + "/" + strconv.Itoa(int(q.Qtype)) + "/" + strconv.Itoa(int(q.Qclass)) + "/")
+
+	var tDns []string
+	switch dnsType {
+	case "Master":
+		tDns = acl.MasterDns
+	case "Backup":
+		tDns = acl.BackupDns
+	}
+
+	for _, d := range tDns {
+		go acl.RequestLineDnsHttp(dnsType, url+d)
+	}
+
+}
+
+func (acl *AclData) RequestLineDnsHttp(dnsType string, url string) {
+	resp, err := http.Get(url)
 
 	if ErrCheck(err) {
 		return
@@ -377,25 +439,24 @@ func (acl *AclData) RequestLineDns(dnsType string, lineDns string) {
 		return
 	}
 
-	var tmpString []string
-	err = json.Unmarshal(body, tmpString)
+	// var tmpString string
+	// err = json.Unmarshal(body, &tmpString)
 
 	if !ErrCheck(err) {
 		switch dnsType {
 		case "Master":
-			acl.MasterDnsQuery <- tmpString
+			acl.MasterLineDnsQuery <- string(body)
 
 		case "Backup":
-			acl.BakupDnsQuery <- tmpString
+			acl.BakupDnsQuery <- string(body)
 		}
 	}
 	acl.JobChan <- 1
-
 }
 
 func ErrCheck(err error) bool {
 	if err != nil {
-		log.Panicln(err.Error())
+		log.Println(err.Error())
 		return true
 	}
 	return false
