@@ -107,6 +107,12 @@ func EtcdDataInit() {
 			if err != nil {
 				continue
 			}
+			tmpRe, _ := regexp.Compile(tmpAclData.MasterDnsReStr)
+			tmpAclData.MasterDnsRe = tmpRe
+
+			tmpRe, _ = regexp.Compile(tmpAclData.BackupDnsReStr)
+			tmpAclData.BackupDnsRe = tmpRe
+
 			AclMap[ip] = tmpAclData
 		}
 	}
@@ -122,6 +128,9 @@ func EtcdDataInit() {
 			if err != nil {
 				continue
 			}
+
+			tmpRe, _ := regexp.Compile(tmpData.LineDnsReStr)
+			tmpData.LineDnsRe = tmpRe
 			ForwardGroupMap[groupName] = map[string]ForwardData{domainName: tmpData}
 		}
 	}
@@ -152,6 +161,12 @@ func AclMapWatch() {
 				if err != nil {
 					continue
 				}
+				tmpRe, _ := regexp.Compile(tmpAclData.MasterDnsReStr)
+				tmpAclData.MasterDnsRe = tmpRe
+
+				tmpRe, _ = regexp.Compile(tmpAclData.BackupDnsReStr)
+				tmpAclData.BackupDnsRe = tmpRe
+
 				AclMap[ip] = tmpAclData
 			case "DELETE":
 				delete(AclMap, ip)
@@ -175,6 +190,8 @@ func ForwardGroupMapWatch() {
 				if err != nil {
 					continue
 				}
+				tmpRe, _ := regexp.Compile(tmpData.LineDnsReStr)
+				tmpData.LineDnsRe = tmpRe
 				ForwardGroupMap[groupName] = map[string]ForwardData{domainName: tmpData}
 
 			case "DELETE":
