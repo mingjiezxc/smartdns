@@ -32,11 +32,11 @@ var (
 )
 
 type YamlConfig struct {
-	AppName       string
-	ListeningPort int
-	EtcdServers   []string
-	EtcdUser      string
-	EtcdPassword  string
+	AppName       string   `yaml:"AppName"`
+	ListeningPort int      `yaml:"ListeningPort"`
+	EtcdServers   []string `yaml:"EtcdServers"`
+	EtcdUser      string   `yaml:"EtcdUser"`
+	EtcdPassword  string   `yaml:"EtcdPassword"`
 }
 
 type DnsMsg struct {
