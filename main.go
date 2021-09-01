@@ -64,7 +64,7 @@ type AclData struct {
 	Domain             string
 	EndChan            chan int
 	JobChan            chan int
-	JobNumebr          int
+	JobNumber          int
 	DoneJobNumber      int
 	MasterLineDnsQuery chan string
 	BakupDnsQuery      chan string
@@ -322,7 +322,7 @@ func (acl *AclData) ParseQuery() {
 		case DnsQureyRR = <-acl.BakupDnsQuery:
 		case <-acl.EndChan:
 			return
-		case <-time.After(time.Duration(acl.Timeout) * time.Second):
+		case <-time.After(1 * time.Second):
 			return
 		}
 	}
@@ -341,7 +341,7 @@ func (acl *AclData) ParseQuery() {
 
 func (acl *AclData) QueryLineDns() {
 
-	acl.JobChan = make(chan int, acl.JobNumebr)
+	acl.JobChan = make(chan int, acl.JobNumber)
 
 	for _, dnsServer := range acl.MasterLineDns {
 		go acl.RequestLineDns("Master", dnsServer)
@@ -353,7 +353,7 @@ func (acl *AclData) QueryLineDns() {
 
 	for _ = range acl.JobChan {
 		acl.DoneJobNumber++
-		if acl.DoneJobNumber == acl.JobNumebr {
+		if acl.DoneJobNumber == acl.JobNumber {
 			return
 		}
 	}
@@ -404,7 +404,7 @@ func (acl *AclData) CheckLineDns() {
 		}
 	}
 
-	acl.JobNumebr = (len(acl.MasterLineDns) + len(acl.BackupLineDns)) * len(acl.MasterDns)
+	acl.JobNumber = (len(acl.MasterLineDns) * len(acl.MasterDns)) + (len(acl.BackupLineDns) * len(acl.BackupDns))
 
 }
 
