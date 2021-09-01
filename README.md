@@ -1,57 +1,59 @@
 # smartdns
 
 # etcd keys
+    smartdns 会读取以下 key 进行初始化，数据能实时更新。
+    acl: /acl/ip/pool/$ip
+    forward: /forward/$groupName/$domain
+    linedns: /line/dns/$zone/$line/$IP:$Port
 
 ## acl
-
 // acl 组 只存在管理页面 /acl/group/$cidr
-
 // 为快速获取 ip acl and config 不使用 /24 之类的，直接单IP /acl/ip/pool/$ip
 
 ```python
-
+{
     # 用于优先级，如有ACL组中有 192.168.0.0/16 , 192.168.0.0/24 则 192.168.0.0/24 优先
     # 更新 192.168.0.0/16 时检查 16 是否大于 24
     # 使用完整值主要是方便 debug 确认最优先的是来自那个 CIDR
     Cidr : "192.168.0.0/24",
-
-    # 优先线路
-    # 即如 "/gz/cm" 则优先同时请求查询 /gz/cm/ 下所有 linedns,那个快回复就使用那个回复用户
-    # 一般还会在 linedns 中随机抽2 ~ 3 台DNS同时请求作为备用数据，如 优先线路 timeout 或不在线 则使用备用数据回复用户
-    # linedns 同时请求两个上层DNS ["114.114.114.114", "1.1.1.1"] ,那个快回复就使用那个回复用户
-    # "/gz/cm/.*" 优先 广州，CM线路 下的所有DNS为主优先服务器
-    # "/gz/ct/192.168.1.1" 优先 广州，CT线路, 中的 某个DNS为主优先服务器
-    # "\/.*\/cm" 优先 所有 CM 线路
+    Netmask： 24 ， 
+    # 优先 LineDns
+    # 即如 "/gz/cm/" 则同时请求查询 /gz/cm/ 下所有 linedns,那个快回复就使用那个回复用户
+    # 并同时请求上层MasterDns ["114.114.114.114", "1.1.1.1"] ,那个快回复就使用那个回复用户
+    # "/.*/cm/"  所有 CM线路 下的所有LineDNS
+    # "/gz/.*/"  所有 gz线路 下的所有LineDNS
 	# Master linedns 正则表达式文本
-	MasterLineDnsReStr string
-	# backup linedns 正则表达式文本
-	BackupLineDnsReStr string
+	MasterLineDnsReStr "/gz/cm/"
 
     # 用户指定上层DNS ，"0.0.0.0" 或 "" 则迭代查询
 	# Master 使用的上层DNS
-	MasterDns []string
+	MasterDns ["114.114.114.114", "1.1.1.1"]
 
+    # 备份 LineDns
+    # 与 Master 同时请求，但需等待 Timeout 才会反回数据
+	# backup linedns 正则表达式文本
+	BackupLineDnsReStr "/gz/.*/"
 
 	# backup 使用的上层DNS
-	BackupDns []string
+	BackupDns ["233.5.5.5", "1.1.1.1"]
 
-    # 怕 list 乱序可能需要添加编号
-    # 如果无序怕 group1 goolge.com是 转到 8.8.8.8,group2 是转到 1.1.1.1 ，无优先级了。
+    # 写入时请注意组的顺序
     ForwardGroup: ["group1", "group2"] 
 
-	# master & backup linedns query timeout 秒
-	Timeout int64
+	# master linedns query timeout 秒
+    # 不建议大 2， 因一般 dns client 10 秒 timeout， 每间隔3秒会重试
+	Timeout 2
 
 }
 ```
 
 ## forward
 
-    获取 domain forward 配置 /forward/*GroupName*/domain
+    获取 domain forward 配置 /forward/$groupName/$domain
     将某个 domain 在 master Line 转到指定线路与使用指定的DNS
 
 ```python
-[{"LineDnsReStr": "/hk/.*", "Dns":["114.114.114.114", "1.1.1.1"]}]
+[{"LineDnsReStr": "/hk/.*/", "Dns":["114.114.114.114", "1.1.1.1"]}]
 ```
 
 // 例子etcd暂定使用右则匹配
@@ -67,14 +69,13 @@
 ```
 
 ## LineDns
-
-// 使用 keepalive key 来确认DNS是否在线 /line/dns/*zone*/LINKE/$IP
+// linedns使用 keepalive key 来确认DNS是否在线 /line/dns/*zone*/LINKE/$IP:$Port
 
 ```json
-/line/dns/gz/cm/192.168.1.1 
-/line/dns/bj/ct/192.168.1.2 
-/line/dns/hk/hk/19.168.1.2 
-/line/dns/hk/hk/19.168.1.2
+/line/dns/gz/cm/192.168.1.1:8888
+/line/dns/bj/ct/192.168.1.2:8888
+/line/dns/hk/hk/19.168.1.2:8888
+/line/dns/hk/hk/19.168.1.2:8888
 ```
 
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
@@ -16,16 +17,27 @@ import (
 
 	"github.com/coreos/etcd/clientv3"
 	"github.com/miekg/dns"
+	"gopkg.in/yaml.v2"
 )
 
 var (
-	DnsMsgChan      = make(chan DnsMsg, 100000)
-	cli             *clientv3.Client
-	LineDnsServers  []string
+	appConfig YamlConfig
+	// etcd client
+	cli *clientv3.Client
+
+	// etcd data
 	AclMap          = make(map[string]AclData)
 	ForwardGroupMap = make(map[string]map[string]ForwardData)
 	LineDnsMap      = make(map[string]string)
 )
+
+type YamlConfig struct {
+	AppName       string
+	ListeningPort int
+	EtcdServers   []string
+	EtcdUser      string
+	EtcdPassword  string
+}
 
 type DnsMsg struct {
 	Addr *net.UDPAddr
@@ -77,39 +89,76 @@ type ForwardData struct {
 	Dns          []string `json:"dns"`
 }
 
-type ForwardData2 struct {
-	LineDnsReStr string   `json:"lineDnsReStr"`
-	Dns          []string `json:"dns"`
-}
+func init() {
 
-func main() {
-	var err error
-	cli, err = clientv3.New(clientv3.Config{
-		Endpoints:   []string{"localhost:2379"},
-		DialTimeout: 10 * time.Second,
-	})
+	// read config file
+	configfile, err := ioutil.ReadFile("./config.yaml")
 	if ErrCheck(err) {
 		os.Exit(1)
 	}
+
+	// yaml marshal config
+	err = yaml.Unmarshal(configfile, &appConfig)
+	if ErrCheck(err) {
+		os.Exit(2)
+	}
+
+	cli, err = clientv3.New(clientv3.Config{
+		Endpoints:   appConfig.EtcdServers,
+		Username:    appConfig.EtcdUser,
+		Password:    appConfig.EtcdPassword,
+		DialTimeout: 10 * time.Second,
+	})
+	if ErrCheck(err) {
+		os.Exit(3)
+	}
+
+}
+
+func main() {
+
 	defer cli.Close()
 
+	// 监听数据变更，实时更新数据
 	go AclMapWatch()
 	go ForwardGroupMapWatch()
 	go LineDnsMapWatch()
 
+	// 注册 app
+	go EtcdAppRegedit()
+
+	// 获取所有 acl ,forward 数据 进行初始化
 	EtcdDataInit()
 
 	// attach request handler func
 	dns.HandleFunc(".", DnsMsgProcess)
 
 	// start server
-	port := 5353
-	server := &dns.Server{Addr: ":" + strconv.Itoa(port), Net: "udp"}
-	log.Printf("Starting at %d\n", port)
-	err = server.ListenAndServe()
+	server := &dns.Server{Addr: ":" + strconv.Itoa(appConfig.ListeningPort), Net: "udp"}
+	log.Printf("Starting at %d\n", appConfig.ListeningPort)
+	err := server.ListenAndServe()
 	defer server.Shutdown()
 	if err != nil {
 		log.Fatalf("Failed to start server: %s\n ", err.Error())
+	}
+
+}
+
+
+// on etcd  KeepAlive app key
+func EtcdAppRegedit() {
+	for {
+		resp, err := cli.Grant(context.TODO(), 10)
+		ErrCheck(err)
+
+		key := "/smartdns/app/" + appConfig.AppName
+
+		_, err = cli.Put(context.TODO(), key, "online", clientv3.WithLease(resp.ID))
+		ErrCheck(err)
+
+		// to renew the lease only once
+		_, kaerr := cli.KeepAlive(context.TODO(), resp.ID)
+		ErrCheck(kaerr)
 	}
 
 }
@@ -123,140 +172,127 @@ func EtcdDataInit() {
 	// update acldata
 	if resp, err := EtcdClinet("/acl/ip/pool/"); err == nil {
 		for _, ev := range resp.Kvs {
-			ip := strings.Split(string(ev.Key), "/")[4]
-			var tmpAclData AclData
-			err = json.Unmarshal(ev.Value, &tmpAclData)
-			if err != nil {
-				continue
-			}
-			tmpRe, _ := regexp.Compile(tmpAclData.MasterLineDnsReStr)
-			tmpAclData.MasterLineDnsRe = tmpRe
-
-			tmpRe, _ = regexp.Compile(tmpAclData.BackupLineDnsReStr)
-			tmpAclData.BackupLineDnsRe = tmpRe
-
-			AclMap[ip] = tmpAclData
+			AclMapUpdate("PUT", ev.Key, ev.Value)
 		}
 	}
 
 	// update forward
 	if resp, err := EtcdClinet("/forward/"); err == nil {
 		for _, ev := range resp.Kvs {
-			keyStr := string(ev.Key)
-			groupName := strings.Split(keyStr, "/")[2]
-			domainName := strings.Split(keyStr, "/")[3]
-
-			var tmpData ForwardData
-			err = json.Unmarshal(ev.Value, &tmpData)
-			if err != nil {
-				continue
-			}
-
-			tmpRe, _ := regexp.Compile(tmpData.LineDnsReStr)
-			tmpData.LineDnsRe = tmpRe
-			ForwardGroupMap[groupName] = map[string]ForwardData{domainName: tmpData}
+			ForwardGroupMapUpdate("PUT", ev.Key, ev.Value)
 		}
 	}
 
 	// update LineDnsMap
 	if resp, err := EtcdClinet("/line/dns/"); err == nil {
 		for _, ev := range resp.Kvs {
-			keyStr := string(ev.Key)
-			zoneName := strings.Split(keyStr, "/")[3]
-			lineType := strings.Split(keyStr, "/")[4]
-			addr := strings.Split(keyStr, "/")[5]
-			newKey := "/" + zoneName + "/" + lineType + "/"
-			LineDnsMap[newKey] = addr
+			LineDnsMapUpdate("PUT", ev.Key, ev.Value)
 		}
 	}
+}
+
+func AclMapUpdate(typeStr string, key []byte, value []byte) error {
+	tmpList := strings.Split(string(key), "/")
+	if len(tmpList) != 5 {
+		return fmt.Errorf("key len err")
+	}
+
+	ip := tmpList[4]
+
+	switch typeStr {
+	case "PUT":
+		var tmpAclData AclData
+		err := json.Unmarshal(value, &tmpAclData)
+		if err != nil {
+			return err
+		}
+		tmpRe, _ := regexp.Compile(tmpAclData.MasterLineDnsReStr)
+		tmpAclData.MasterLineDnsRe = tmpRe
+
+		tmpRe, _ = regexp.Compile(tmpAclData.BackupLineDnsReStr)
+		tmpAclData.BackupLineDnsRe = tmpRe
+
+		AclMap[ip] = tmpAclData
+	case "DELETE":
+		delete(AclMap, ip)
+	}
+	return nil
 }
 
 func AclMapWatch() {
 	rch := cli.Watch(context.Background(), "/acl/ip/pool/", clientv3.WithPrefix())
 	for wresp := range rch {
 		for _, ev := range wresp.Events {
-			tmpList := strings.Split(string(ev.Kv.Key), "/")
-			if len(tmpList) != 5 {
-				continue
-			}
-
-			ip := tmpList[4]
-
-			switch ev.Type.String() {
-			case "PUT":
-				var tmpAclData AclData
-				err := json.Unmarshal(ev.Kv.Value, &tmpAclData)
-				if err != nil {
-					continue
-				}
-				tmpRe, _ := regexp.Compile(tmpAclData.MasterLineDnsReStr)
-				tmpAclData.MasterLineDnsRe = tmpRe
-
-				tmpRe, _ = regexp.Compile(tmpAclData.BackupLineDnsReStr)
-				tmpAclData.BackupLineDnsRe = tmpRe
-
-				AclMap[ip] = tmpAclData
-			case "DELETE":
-				delete(AclMap, ip)
-			}
+			AclMapUpdate(ev.Type.String(), ev.Kv.Key, ev.Kv.Value)
 		}
 	}
+}
+
+func ForwardGroupMapUpdate(typeStr string, key []byte, value []byte) error {
+	keyStr := string(key)
+	tmpList := strings.Split(keyStr, "/")
+	if len(tmpList) != 4 {
+		return fmt.Errorf("key len err")
+	}
+
+	groupName := tmpList[2]
+	domainName := tmpList[3]
+
+	switch typeStr {
+	case "PUT":
+		var tmpData ForwardData
+		err := json.Unmarshal(value, &tmpData)
+		if err != nil {
+			return err
+		}
+		tmpRe, _ := regexp.Compile(tmpData.LineDnsReStr)
+		tmpData.LineDnsRe = tmpRe
+		ForwardGroupMap[groupName] = map[string]ForwardData{domainName: tmpData}
+
+	case "DELETE":
+		delete(ForwardGroupMap[groupName], domainName)
+	}
+	return nil
 }
 
 func ForwardGroupMapWatch() {
 	rch := cli.Watch(context.Background(), "/forward/", clientv3.WithPrefix())
 	for wresp := range rch {
 		for _, ev := range wresp.Events {
-			keyStr := string(ev.Kv.Key)
-			tmpList := strings.Split(keyStr, "/")
-			if len(tmpList) != 4 {
-				continue
-			}
-
-			groupName := tmpList[2]
-			domainName := tmpList[3]
-
-			switch ev.Type.String() {
-			case "PUT":
-				var tmpData ForwardData
-				err := json.Unmarshal(ev.Kv.Value, &tmpData)
-				if err != nil {
-					continue
-				}
-				tmpRe, _ := regexp.Compile(tmpData.LineDnsReStr)
-				tmpData.LineDnsRe = tmpRe
-				ForwardGroupMap[groupName] = map[string]ForwardData{domainName: tmpData}
-
-			case "DELETE":
-				delete(ForwardGroupMap[groupName], domainName)
-			}
+			ForwardGroupMapUpdate(ev.Type.String(), ev.Kv.Key, ev.Kv.Value)
 		}
 	}
+}
+
+func LineDnsMapUpdate(typeStr string, key []byte, value []byte) error {
+
+	keyStr := string(key)
+	tmpList := strings.Split(keyStr, "/")
+
+	if len(tmpList) != 6 {
+		return fmt.Errorf("key len err")
+	}
+
+	zoneName := tmpList[3]
+	lineType := tmpList[4]
+	addr := tmpList[5]
+	newKey := "/" + zoneName + "/" + lineType + "/"
+
+	switch typeStr {
+	case "PUT":
+		LineDnsMap[newKey] = addr
+
+	case "DELETE":
+		delete(LineDnsMap, newKey)
+	}
+	return nil
 }
 
 func LineDnsMapWatch() {
 	rch := cli.Watch(context.Background(), "/line/dns/", clientv3.WithPrefix())
 	for wresp := range rch {
 		for _, ev := range wresp.Events {
-			keyStr := string(ev.Kv.Key)
-			tmpList := strings.Split(keyStr, "/")
-
-			if len(tmpList) != 6 {
-				continue
-			}
-
-			zoneName := tmpList[3]
-			lineType := tmpList[4]
-			addr := tmpList[5]
-			newKey := "/" + zoneName + "/" + lineType + "/"
-
-			switch ev.Type.String() {
-			case "PUT":
-				LineDnsMap[newKey] = addr
-
-			case "DELETE":
-				delete(LineDnsMap, newKey)
-			}
+			LineDnsMapUpdate(ev.Type.String(), ev.Kv.Key, ev.Kv.Value)
 		}
 	}
 }

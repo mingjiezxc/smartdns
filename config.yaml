@@ -1,0 +1,10 @@
+AppName: smartdns-test
+
+# if Listening port < 1024 ，pls use root run
+ListeningPort: 53
+
+# etcd server
+EtcdServers:
+  - 127.0.0.1:2379
+EtcdUser: 
+EtcdPassword:
