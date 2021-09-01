@@ -151,7 +151,7 @@ func EtcdAppRegedit() {
 		if ErrCheck(err) {
 			continue
 		}
-		
+
 		key := "/smartdns/app/" + appConfig.AppName
 
 		_, err = cli.Put(context.TODO(), key, "online", clientv3.WithLease(resp.ID))
@@ -313,10 +313,11 @@ func EtcdClinet(key string) (resp *clientv3.GetResponse, err error) {
 
 func DnsMsgProcess(w dns.ResponseWriter, r *dns.Msg) {
 
-	// acl check , not on acl exit thread
 	addr := strings.Split(w.RemoteAddr().String(), ":")[0]
 
+	// acl check , not on acl exit thread
 	acl, ok := AclMap[addr]
+
 	// Not on Acl exit
 	if !ok {
 		w.WriteMsg(r)
@@ -330,6 +331,7 @@ func DnsMsgProcess(w dns.ResponseWriter, r *dns.Msg) {
 		return
 	}
 
+	// init data
 	acl.Domain = acl.Msg.Question[0].Name
 	acl.CheckRquestDns(acl.Domain)
 	acl.CheckLineDns()
@@ -338,14 +340,19 @@ func DnsMsgProcess(w dns.ResponseWriter, r *dns.Msg) {
 	acl.BakupDnsQuery = make(chan string, 10)
 	acl.EndChan = make(chan int)
 
+	// 开始请求 line dns
 	acl.ParseQuery()
 
+	// 返回给用户
 	w.WriteMsg(acl.Msg)
 
 }
 
 func (acl *AclData) ParseQuery() {
+
+	// start query
 	go acl.QueryLineDns()
+
 	var DnsQureyRR string
 
 	// 等待 master dns 回复
@@ -455,45 +462,41 @@ func (acl *AclData) RequestLineDns(dnsType string, lineDns string) {
 
 	url := fmt.Sprint("http://" + lineDns + "/query/" + q.Name + "/" + strconv.Itoa(int(q.Qtype)) + "/" + strconv.Itoa(int(q.Qclass)) + "/")
 
-	var tDns []string
 	switch dnsType {
 	case "Master":
-		tDns = acl.MasterDns
-	case "Backup":
-		tDns = acl.BackupDns
-	}
+		for _, d := range acl.MasterDns {
+			go acl.RequestLineDnsHttp(url+d, acl.MasterLineDnsQuery)
+		}
 
-	for _, d := range tDns {
-		go acl.RequestLineDnsHttp(dnsType, url+d)
+	case "Backup":
+		for _, d := range acl.BackupDns {
+			go acl.RequestLineDnsHttp(url+d, acl.BakupDnsQuery)
+		}
 	}
 
 }
 
-func (acl *AclData) RequestLineDnsHttp(dnsType string, url string) {
+func (acl *AclData) RequestLineDnsHttp(url string, dataChan chan string) {
 	resp, err := http.Get(url)
+	defer func() { acl.JobChan <- 1 }()
 
 	if ErrCheck(err) {
 		return
 	}
+
 	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return
+	}
+
 	body, err := io.ReadAll(resp.Body)
 	if ErrCheck(err) {
 		return
 	}
 
-	// var tmpString string
-	// err = json.Unmarshal(body, &tmpString)
+	dataChan <- string(body)
 
-	if !ErrCheck(err) {
-		switch dnsType {
-		case "Master":
-			acl.MasterLineDnsQuery <- string(body)
-
-		case "Backup":
-			acl.BakupDnsQuery <- string(body)
-		}
-	}
-	acl.JobChan <- 1
 }
 
 func ErrCheck(err error) bool {

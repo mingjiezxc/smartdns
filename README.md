@@ -7,41 +7,45 @@
     linedns: /line/dns/$zone/$line/$IP:$Port
 
 ## acl
-// acl 组 只存在管理页面 /acl/group/$cidr
-// 为快速获取 ip acl and config 不使用 /24 之类的，直接单IP /acl/ip/pool/$ip
 
+### group
+// acl 组 只存在管理页面 /acl/group/$cidr
+
+### ip pool
+// 为快速获取 ip acl and config 不使用 /24 之类的，直接单IP /acl/ip/pool/$ip
 ```python
 {
     # 用于优先级，如有ACL组中有 192.168.0.0/16 , 192.168.0.0/24 则 192.168.0.0/24 优先
     # 更新 192.168.0.0/16 时检查 16 是否大于 24
     # 使用完整值主要是方便 debug 确认最优先的是来自那个 CIDR
     Cidr : "192.168.0.0/24",
-    Netmask： 24 ， 
+    Netmask： 24 , 
+
     # 优先 LineDns
     # 即如 "/gz/cm/" 则同时请求查询 /gz/cm/ 下所有 linedns,那个快回复就使用那个回复用户
     # 并同时请求上层MasterDns ["114.114.114.114", "1.1.1.1"] ,那个快回复就使用那个回复用户
     # "/.*/cm/"  所有 CM线路 下的所有LineDNS
-    # "/gz/.*/"  所有 gz线路 下的所有LineDNS
+    # "/gz/.*/"  所有 GZ区域 下的所有LineDNS
 	# Master linedns 正则表达式文本
-	MasterLineDnsReStr "/gz/cm/"
+    MasterLineDnsReStr "/gz/cm/",
 
     # 用户指定上层DNS ，"0.0.0.0" 或 "" 则迭代查询
-	# Master 使用的上层DNS
-	MasterDns ["114.114.114.114", "1.1.1.1"]
+    # Master 使用的上层DNS
+    MasterDns ["114.114.114.114", "1.1.1.1"],
 
     # 备份 LineDns
-    # 与 Master 同时请求，但需等待 Timeout 才会反回数据
-	# backup linedns 正则表达式文本
-	BackupLineDnsReStr "/gz/.*/"
+    # 与 Master 同时请求，但需等待 Timeout 才会返回数据
+    # backup linedns 正则表达式文本
+    BackupLineDnsReStr "/gz/.*/",
 
 	# backup 使用的上层DNS
-	BackupDns ["233.5.5.5", "1.1.1.1"]
+	BackupDns ["233.5.5.5", "1.1.1.1"],
 
     # 写入时请注意组的顺序
-    ForwardGroup: ["group1", "group2"] 
+    ForwardGroup: ["group1", "group2"] ,
 
 	# master linedns query timeout 秒
-    # 不建议大 2， 因一般 dns client 10 秒 timeout， 每间隔3秒会重试
+    # 不建议大于2， 因一般 dns client 10 秒 timeout， 每间隔3秒会重试
 	Timeout 2
 
 }
