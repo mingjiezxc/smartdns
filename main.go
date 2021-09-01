@@ -144,23 +144,29 @@ func main() {
 
 }
 
-
 // on etcd  KeepAlive app key
 func EtcdAppRegedit() {
 	for {
 		resp, err := cli.Grant(context.TODO(), 10)
-		ErrCheck(err)
-
+		if ErrCheck(err) {
+			continue
+		}
+		
 		key := "/smartdns/app/" + appConfig.AppName
 
 		_, err = cli.Put(context.TODO(), key, "online", clientv3.WithLease(resp.ID))
-		ErrCheck(err)
+		if ErrCheck(err) {
+			continue
+		}
 
 		// to renew the lease only once
-		_, kaerr := cli.KeepAlive(context.TODO(), resp.ID)
-		ErrCheck(kaerr)
+		_, err = cli.KeepAlive(context.TODO(), resp.ID)
+		if ErrCheck(err) {
+			continue
+		}
+		break
 	}
-
+	log.Println("EtcdAppRegedit Config done")
 }
 
 func EtcdDataInit() {
