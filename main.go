@@ -131,6 +131,9 @@ func main() {
 	// query dns listening
 	go QueryListeningServerStart()
 
+	// clean job
+	go CleanDnsQuestionJob()
+
 	// start dns server
 	DnsServerStart()
 
@@ -358,4 +361,17 @@ func ErrCheck(err error) bool {
 		return true
 	}
 	return false
+}
+
+func CleanDnsQuestionJob() {
+	for {
+		time.Sleep(120 * time.Second)
+
+		for key, val := range QueryMap {
+			if time.Now().Unix()-val.TimeNow > 120 {
+				delete(QueryMap, key)
+			}
+		}
+	}
+
 }
