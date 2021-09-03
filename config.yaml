@@ -1,7 +1,8 @@
 AppName: smartdns-test
 
 # if Listening port < 1024 ，pls use root run
-ListeningPort: 53
+DnsListeningPort: 5300
+QueryListeningPort: 5555
 
 # etcd server
 EtcdServers:

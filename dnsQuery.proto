@@ -1,0 +1,15 @@
+syntax = "proto3";
+option go_package = "./;main";
+
+
+// this is a comment
+message DnsQuery {
+  uint32 id = 1;
+  bool master = 2;
+  string tport = 3;
+  string domain = 4;
+  uint32 dnstype = 5;
+  uint32 dnsclass = 6;
+  string tdns =7;
+  repeated string rr = 8;
+}
