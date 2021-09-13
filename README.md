@@ -9,7 +9,7 @@
 ## acl
 
 ### group
-// acl 组 只存在管理页面 /acl/group/$cidr
+// acl 组 只存在管理页面 /acl/ip/group/$cidr
 
 ### ip pool
 // 为快速获取 ip acl and config 不使用 /24 之类的，直接单IP /acl/ip/pool/$ip

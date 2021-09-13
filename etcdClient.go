@@ -56,7 +56,7 @@ func EtcdDataInit() {
 	}
 
 	// update forward
-	if resp, err := EtcdClinet("/forward/"); err == nil {
+	if resp, err := EtcdClinet("/forward/group/"); err == nil {
 		for _, ev := range resp.Kvs {
 			ForwardGroupMapUpdate("PUT", ev.Key, ev.Value)
 		}
@@ -135,7 +135,7 @@ func ForwardGroupMapUpdate(typeStr string, key []byte, value []byte) error {
 }
 
 func ForwardGroupMapWatch() {
-	rch := cli.Watch(context.Background(), "/forward/", clientv3.WithPrefix())
+	rch := cli.Watch(context.Background(), "/forward/group/", clientv3.WithPrefix())
 	for wresp := range rch {
 		for _, ev := range wresp.Events {
 			ForwardGroupMapUpdate(ev.Type.String(), ev.Kv.Key, ev.Kv.Value)
