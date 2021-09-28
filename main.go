@@ -23,7 +23,9 @@ var (
 	AclMap          = make(map[string]AclData)
 	ForwardGroupMap = make(map[string]map[string]ForwardData)
 	LineDnsMap      = make(map[string]string)
-	QueryMap        = make(map[uint16]*UserQuestion)
+
+	// string ip + / + domain
+	QueryMap = make(map[string]*UserQuestion)
 )
 
 type YamlConfig struct {
@@ -33,15 +35,22 @@ type YamlConfig struct {
 	EtcdServers        []string `yaml:"EtcdServers"`
 	EtcdUser           string   `yaml:"EtcdUser"`
 	EtcdPassword       string   `yaml:"EtcdPassword"`
+	MaxTtl             int64    `yaml:"MaxTtl"`
+	DnsQueryTimeOut    int64    `yaml:"DnsQueryTimeOut"`
+	CacheClen          int64    `yaml:"CacheClen"`
+	CacheExtend        int64    `yaml:"CacheExtend"`
 }
 
 type UserQuestion struct {
-	Response      dns.ResponseWriter
-	Msg           *dns.Msg
-	TimeNow       int64
-	TimeOut       int64
-	BackupQuery   bool
-	MasterLineDns []string
+	Acl          string
+	ResponseList []dns.ResponseWriter
+	Ttl          int64
+	LastTime     int64
+	DnsMsg       *dns.Msg
+	BackupQuery  bool
+	MasterQuery  bool
+	Cache        bool
+	CacheCount   int64
 }
 
 type DnsMsg struct {
@@ -158,15 +167,15 @@ func QueryListeningServerStart() {
 
 	log.Println("Query Server Starting at ", appConfig.QueryListeningPort)
 	for {
-		n, _, err := ser.ReadFromUDP(p)
+		n, u, err := ser.ReadFromUDP(p)
 		if err != nil {
 			continue
 		}
-		go ReturnDnsUser(p[0:n])
+		go ReturnDnsUser(u, p[0:n])
 	}
 }
 
-func ReturnDnsUser(data []byte) {
+func ReturnDnsUser(addr *net.UDPAddr, data []byte) {
 
 	// unMarshal data
 	newDnsQuery := &DnsQuery{}
@@ -176,46 +185,70 @@ func ReturnDnsUser(data []byte) {
 	}
 
 	// check exist
-	query, ok := QueryMap[uint16(newDnsQuery.Id)]
+	query, ok := QueryMap[newDnsQuery.Ip+"/"+newDnsQuery.Domain]
 	if !ok {
 		return
 	}
 
-	// is backup linedns data ,已有other backup sleep
-	if !newDnsQuery.Master && query.BackupQuery {
-		return
+	// 检查是否有其他进程在更新
+	if newDnsQuery.Master {
+		if query.MasterQuery {
+			return
+		}
+		query.MasterQuery = true
 	}
 
-	// check master line dns online status
-	var masterLineDnsStatus bool
-	for _, lineDns := range query.MasterLineDns {
-		if _, ok := LineDnsMap[lineDns]; ok {
-			masterLineDnsStatus = true
-			break
+	if !newDnsQuery.Master {
+		// Master Dns 已返回 退出
+		if query.MasterQuery {
+			return
 		}
-	}
+		// 已有其他 Backup Dns 返回 退出
+		if query.BackupQuery {
+			return
+		}
 
-	// check master ,backup , timeout
-	if !newDnsQuery.Master && masterLineDnsStatus {
-		if ttl := time.Now().Unix() - query.TimeNow; ttl < query.TimeOut {
-			QueryMap[uint16(newDnsQuery.Id)].BackupQuery = true
-			time.Sleep(time.Duration(ttl) * time.Second)
+		query.BackupQuery = true
+
+		// 检查是否已 time out ,
+		tmpTime := query.LastTime - time.Now().Unix()
+		if tmpTime > appConfig.DnsQueryTimeOut {
+			time.Sleep(time.Duration(tmpTime - appConfig.DnsQueryTimeOut))
 		}
+
+		// 再次 检查 Master 是否已返回
+		if query.MasterQuery {
+			return
+		}
+
 	}
 
 	// update dns msg rr
+	var tmpRr []dns.RR
+	var tmpTtl int64
 	for _, dnsRR := range newDnsQuery.Rr {
 		rr, _ := dns.NewRR(dnsRR)
 		if rr != nil {
-			query.Msg.Answer = append(query.Msg.Answer, rr)
+			tmpRr = append(tmpRr, rr)
 		}
+
+		tmpTtl = int64(rr.Header().Ttl)
+	}
+	query.DnsMsg.Answer = tmpRr
+
+	if tmpTtl < appConfig.MaxTtl {
+		query.Ttl = tmpTtl
 	}
 
 	// return user
-	query.Response.WriteMsg(query.Msg)
+	for _, i := range query.ResponseList {
+		i.WriteMsg(query.DnsMsg)
+		query.ResponseList = query.ResponseList[1:]
+	}
 
-	// del  data
-	delete(QueryMap, uint16(newDnsQuery.Id))
+	// 标记 cache
+	query.Cache = true
+
 }
 
 func DnsServerStart() {
@@ -241,9 +274,7 @@ func DnsMsgProcess(w dns.ResponseWriter, r *dns.Msg) {
 
 	// Not on Acl exit
 	if !ok {
-
 		w.WriteMsg(r)
-		delete(QueryMap, r.Id)
 		return
 	}
 
@@ -254,15 +285,30 @@ func DnsMsgProcess(w dns.ResponseWriter, r *dns.Msg) {
 
 	tmpDnsMsg := new(dns.Msg).SetReply(r)
 
-	QueryMap[r.Id] = &UserQuestion{
-		Response: w,
-		Msg:      tmpDnsMsg,
-		TimeNow:  time.Now().Unix(),
+	mapkey := addr + "/" + r.Question[0].Name
+
+	// check cache status
+	if query, ok := QueryMap[mapkey]; !ok {
+		QueryMap[mapkey] = &UserQuestion{
+			Acl:      addr,
+			Ttl:      appConfig.MaxTtl,
+			LastTime: time.Now().Unix(),
+			DnsMsg:   tmpDnsMsg,
+		}
+	} else {
+		// check cache 是否存在，如存在返回 cache
+		if query.Cache {
+			w.WriteMsg(query.DnsMsg)
+			QueryMap[mapkey].CacheCount++
+			return
+		}
 	}
+
+	QueryMap[mapkey].ResponseList = append(QueryMap[mapkey].ResponseList, w)
 
 	// init data
 	acl.DnsQueryData = &DnsQuery{
-		Id:       uint32(r.Id),
+		Ip:       addr,
 		Tport:    appConfig.QueryListeningPort,
 		Domain:   tmpDnsMsg.Question[0].Name,
 		Dnstype:  uint32(tmpDnsMsg.Question[0].Qtype),
@@ -365,11 +411,26 @@ func ErrCheck(err error) bool {
 
 func CleanDnsQuestionJob() {
 	for {
-		time.Sleep(120 * time.Second)
+		time.Sleep(time.Duration(appConfig.CacheClen))
 
 		for key, val := range QueryMap {
-			if time.Now().Unix()-val.TimeNow > 120 {
-				delete(QueryMap, key)
+			if time.Now().Unix()-val.LastTime > val.Ttl {
+
+				if QueryMap[key].CacheCount > appConfig.CacheExtend {
+					acl := AclMap[QueryMap[key].Acl]
+					QueryMap[key].MasterQuery = false
+					QueryMap[key].BackupQuery = false
+
+					acl.SendLineDnsUdp(true)
+					acl.SendLineDnsUdp(false)
+					QueryMap[key].CacheCount = 0
+
+					continue
+				}
+
+				if len(QueryMap[key].ResponseList) == 0 {
+					delete(QueryMap, key)
+				}
 			}
 		}
 	}

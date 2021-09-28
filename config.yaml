@@ -9,3 +9,12 @@ EtcdServers:
   - 127.0.0.1:2379
 EtcdUser: 
 EtcdPassword:
+
+
+DnsQueryTimeOut: 2
+MaxTtl: 600
+
+## 缓存清除检查时间（秒）
+CacheClen: 60
+## 缓存清除间隔中击中缓存超过设置次数，则更新，不清除缓存
+CacheExtend: 20

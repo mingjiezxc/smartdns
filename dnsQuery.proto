@@ -4,7 +4,7 @@ option go_package = "./;main";
 
 // this is a comment
 message DnsQuery {
-  uint32 id = 1;
+  string ip = 1;
   bool master = 2;
   string tport = 3;
   string domain = 4;
