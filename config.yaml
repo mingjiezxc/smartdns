@@ -1,7 +1,9 @@
 AppName: smartdns-test
 
 # if Listening port < 1024 ，pls use root run
+## dns 服务器监听地址，应为 53
 DnsListeningPort: 5300
+## linedns 返回查询的端口，这个随意
 QueryListeningPort: 5555
 
 # etcd server
@@ -10,11 +12,18 @@ EtcdServers:
 EtcdUser: 
 EtcdPassword:
 
-
+## Master time out 时间（秒）
 DnsQueryTimeOut: 2
+
+# 缓存功能配置
+## 缓存是以 ip/domain 作为key
+
+## 最大TTL 时间
+## 设为 600 ,如域名 nlookup ttl 6000,则缓存 600s
+## 设为 600 ,如域名 nlookup ttl 60,则缓存 60s
 MaxTtl: 600
 
-## 缓存清除检查时间（秒）
+## 缓存清除间隔（秒）
 CacheClen: 60
-## 缓存清除间隔中击中缓存超过设置次数，则更新，不清除缓存
+## 缓存清除间隔，击中缓存超过设置次数，则重新查询更新缓存，不清除缓存
 CacheExtend: 20
